@@ -1,0 +1,1 @@
+if('serviceWorker' in navigator) {window.addEventListener('load', () => {navigator.serviceWorker.register('/Simulador-EKG-DESA/sw.js', { scope: '/Simulador-EKG-DESA/' })})}
