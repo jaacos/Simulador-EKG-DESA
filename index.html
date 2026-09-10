@@ -341,6 +341,7 @@
             <span>Sin flujo (sesión): <b id="noFlowTotal" class="text-slate-300">0 s</b></span>
             <div class="flex gap-2">
               <button onclick="app.downloadReport()" class="px-2 py-1 rounded bg-emerald-700/40 border border-emerald-600/50 text-emerald-300 hover:bg-emerald-700/60">⬇ Informe</button>
+              <button onclick="app.printReport()" class="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700">🖨 Imprimir</button>
               <button onclick="app.resetSessionLog()" class="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-400 hover:bg-slate-700">Reiniciar</button>
             </div>
           </div>
@@ -382,6 +383,8 @@
   <button id="btnInfoModal" onclick="app.toggleModal(true)" title="Guía de ondas ECG" class="fixed bottom-3 right-3 z-30 w-9 h-9 rounded-full bg-slate-800 border border-slate-700 text-emerald-400 hover:bg-slate-700 shadow-lg flex items-center justify-center font-mono font-bold">
     ?
   </button>
+
+  <div id="printReportRoot"></div>
 
   <script type="module" src="/src/main.js"></script>
 </body>

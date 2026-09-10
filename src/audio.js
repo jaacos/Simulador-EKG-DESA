@@ -61,16 +61,19 @@ export class AudioEngine {
     osc.stop(ctx.currentTime + duration + 0.02);
   }
 
-  /** Pitido de QRS (síncrono con el complejo QRS del trazado ECG). */
-  beepQRS() {
-    this._tone({ freq: 880, duration: 0.09, type: 'sine', gain: 0.07 });
-  }
-
-  /** Tono de pulso/SpO2 — el tono varía sutilmente con la saturación. */
-  beepPulse(spo2) {
-    const clamped = spo2 == null ? 85 : Math.max(70, Math.min(100, spo2));
-    const freq = 420 + (clamped - 70) * 6; // ~600-600? mapeado suave
-    this._tone({ freq, duration: 0.07, type: 'sine', gain: 0.045 });
+  /**
+   * Pitido de QRS (síncrono con el complejo QRS del trazado ECG). Igual que
+   * en un monitor real, el tono baja de altura según cae la SpO2 — es la
+   * señal de alerta auditiva más reconocible en un box de reanimación,
+   * y se puede detectar una desaturación "de oído" antes de mirar la cifra.
+   */
+  beepQRS(spo2) {
+    let freq = 880;
+    if (spo2 != null) {
+      const clamped = Math.max(70, Math.min(100, spo2));
+      freq = 620 + (clamped - 70) * 8.7; // 70% ≈ 620Hz grave · 100% ≈ 880Hz agudo
+    }
+    this._tone({ freq, duration: 0.09, type: 'sine', gain: 0.07 });
   }
 
   /** Aviso corto de alarma (bradicardia/taquicardia extrema, hipoxia...). */

@@ -83,3 +83,20 @@ body {
 .animate-pulse-ring {
   animation: pulse-ring 1.1s ease-out infinite;
 }
+
+#printReportRoot {
+  display: none;
+}
+@media print {
+  body > *:not(#printReportRoot) {
+    display: none !important;
+  }
+  #printReportRoot {
+    display: block !important;
+    color: #000;
+    background: #fff;
+    font-family: 'Share Tech Mono', monospace;
+    white-space: pre-wrap;
+    padding: 1.5rem;
+  }
+}

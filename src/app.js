@@ -83,6 +83,7 @@ export class App {
     this.statAnalyses = 0;
     this.statShocks = 0;
     this._sessionStartedAt = new Date();
+    this._alarmTickCounter = 0;
 
     this.measuredHR = this.hr;
     this._beatHistory = [];
@@ -407,7 +408,7 @@ export class App {
         this.measuredHR = lerp(this.measuredHR, instHR, 0.35);
       }
     }
-    if (this.audio.enabled) this.audio.beepQRS();
+    if (this.audio.enabled) this.audio.beepQRS(this.spo2);
   }
 
   _tickVitals(dtSeconds) {
@@ -560,9 +561,33 @@ export class App {
       this.dom.clockDisplay.textContent = new Date().toLocaleTimeString('es-ES', { hour12: false });
       this._tickVitals(1);
       this._tickNoFlow(1);
+      this._tickAlarms();
     };
     tick();
     setInterval(tick, 1000);
+  }
+
+  /**
+   * Alarma audible del monitor. Un monitor que se pone en rojo mientras
+   * queda mudo no es realista: en parada suena cada segundo (como un
+   * monitor real en código), y en bradicardia/taquicardia extrema o
+   * desaturación &lt;90% suena de forma más espaciada para no saturar.
+   */
+  _tickAlarms() {
+    if (!this.audio.enabled) return;
+    this._alarmTickCounter += 1;
+    const def = RHYTHMS[this.rhythmId];
+
+    if (!def.hasPulse) {
+      this.audio.alarmBeep(true);
+      return;
+    }
+    const hrDisplay = Math.round(this.measuredHR);
+    const hrWarn = hrDisplay > 0 && (hrDisplay < 40 || hrDisplay > 150);
+    const spo2Warn = this.spo2 != null && this.spo2 < 90;
+    if ((hrWarn || spo2Warn) && this._alarmTickCounter % 2 === 0) {
+      this.audio.alarmBeep(false);
+    }
   }
 
   // ------------------------------------------------- Metrónomo RCP / flujo --
@@ -672,7 +697,7 @@ export class App {
     this._logEvent('Registro de sesión reiniciado.');
   }
 
-  downloadReport() {
+  _buildReportLines() {
     const lines = [];
     lines.push('INFORME DE SESIÓN — CardioSim Pro & DESA');
     lines.push(`Generado: ${new Date().toLocaleString('es-ES')}`);
@@ -692,7 +717,20 @@ export class App {
     lines.push(
       'Nota: generado por un simulador didáctico. Los tiempos y decisiones aquí registrados sirven para el debrief del instructor, no son datos clínicos reales.'
     );
+    return lines;
+  }
 
+  printReport() {
+    const lines = this._buildReportLines();
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const root = document.getElementById('printReportRoot');
+    root.innerHTML = `<pre>${esc(lines.join('\n'))}</pre>`;
+    window.print();
+    this._logEvent('Informe de sesión impreso.');
+  }
+
+  downloadReport() {
+    const lines = this._buildReportLines();
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -936,6 +974,7 @@ export class App {
       this.desaState = 'result-shockable';
       this.dom.desaVoiceText.textContent = '"Descarga recomendada. Cargando. Aléjense del paciente."';
       this.dom.desaGuidanceSubtext.textContent = 'Confirme que nadie toca al paciente y pulse DESCARGA.';
+      this.audio.chargeSweep(1.3);
       this.audio.speak('Descarga recomendada. Cargando. Aléjense del paciente.');
       this.dom.btnShockDESA.disabled = false;
       this.dom.btnShockDESA.className =
