@@ -1,0 +1,85 @@
+/* Solo subset "latin" (cubre español: áéíóúüñ¿¡) para no precachear offline
+   los subsets cirílico/griego/tailandés/vietnamita que Fontsource incluye
+   por defecto en los imports "completos" — reduce ~250 KB de descarga inicial. */
+@import '@fontsource/inter/latin-400.css';
+@import '@fontsource/inter/latin-500.css';
+@import '@fontsource/inter/latin-600.css';
+@import '@fontsource/inter/latin-700.css';
+@import '@fontsource/chakra-petch/latin-400.css';
+@import '@fontsource/chakra-petch/latin-600.css';
+@import '@fontsource/chakra-petch/latin-700.css';
+@import '@fontsource/share-tech-mono/latin-400.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+.bg-monitor {
+  background: radial-gradient(ellipse at 50% 0%, #0e2320 0%, #050b0e 72%);
+}
+
+.glow-ecg,
+.glow-pleth,
+.glow-resp {
+  text-shadow: 0 0 6px currentColor, 0 0 16px currentColor;
+}
+
+/* Efecto sutil de pantalla CRT/monitor médico: viñeta + líneas de barrido */
+.crt-overlay {
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 0.35) 100%);
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.55);
+}
+.crt-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.025) 0px,
+    rgba(255, 255, 255, 0.025) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+
+@keyframes flash-critical {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.animate-flash-critical {
+  animation: flash-critical 0.9s ease-in-out infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(245, 158, 11, 0);
+  }
+}
+.animate-pulse-ring {
+  animation: pulse-ring 1.1s ease-out infinite;
+}
