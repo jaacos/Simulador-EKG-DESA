@@ -94,6 +94,40 @@ export class AudioEngine {
   }
 
   /**
+   * Metrónomo de compresiones torácicas (100-120/min según ERC/AHA).
+   * `onTick(count, isVentilationCue)` se dispara en cada clic para que la
+   * UI sincronice el pulso visual; cada 30ª compresión marca el cambio a
+   * 2 ventilaciones (ciclo 30:2) con un tono distinto.
+   */
+  startMetronome(bpm = 110, onTick) {
+    this.stopMetronome();
+    const intervalMs = 60000 / bpm;
+    let count = 0;
+    this._metronomeId = setInterval(() => {
+      count += 1;
+      const isVentilationCue = count % 30 === 0;
+      this._tone({
+        freq: isVentilationCue ? 1500 : 1000,
+        duration: isVentilationCue ? 0.13 : 0.04,
+        type: 'square',
+        gain: isVentilationCue ? 0.09 : 0.05,
+      });
+      if (onTick) onTick(count, isVentilationCue);
+    }, intervalMs);
+  }
+
+  stopMetronome() {
+    if (this._metronomeId) {
+      clearInterval(this._metronomeId);
+      this._metronomeId = null;
+    }
+  }
+
+  get metronomeRunning() {
+    return this._metronomeId != null;
+  }
+
+  /**
    * Voz del DESA. Devuelve una Promise que se resuelve cuando termina de
    * hablar (o inmediatamente si Web Speech API no está disponible / está
    * desactivado el sonido) — nunca bloquea el flujo de la app.

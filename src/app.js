@@ -3,8 +3,12 @@ import { AudioEngine } from './audio.js';
 
 const SWEEP_SECONDS = 6; // ventana de trazado visible, a 25 mm/s (etiqueta ya fija en el HTML)
 const MM_PER_SECOND = 25;
-const CPR_CYCLE_SECONDS = 24; // "2 minutos de RCP" comprimidos para ritmo de aula; ver btnSkipWait
+const DEFAULT_CPR_CYCLE_SECONDS = 24; // "2 minutos de RCP" comprimidos para ritmo de aula; configurable en panel docente
 const ANALYSIS_DWELL_MS = 2800;
+const NO_FLOW_WARN_SECONDS = 10; // ERC/AHA: minimizar pausas en compresiones, objetivo <10 s
+const QUIZ_SCORE_STORAGE_KEY = 'cardiosim-quiz-score-v1';
+// Estados del DESA en los que las manos están fuera del pecho (sin compresiones).
+const NO_FLOW_STATES = new Set(['analyzing', 'result-shockable', 'shocked']);
 
 const CLINICAL_SCENARIOS = {
   parada_fv: {
@@ -62,8 +66,23 @@ export class App {
 
     this.desaState = 'idle';
     this.cprSecondsLeft = 0;
+    this.cprCycleSeconds = DEFAULT_CPR_CYCLE_SECONDS;
     this.scenarioLabel = 'Caso Activo #1';
     this.scenarioContext = null;
+
+    this.compressionCount = 0;
+    this.noFlowCurrentSeconds = 0;
+    this.noFlowTotalSeconds = 0;
+    // Se activa en cuanto el ritmo actual pierde el pulso y permanece activo
+    // aunque una descarga "convierta" el ritmo — en la vida real nunca se
+    // deja de comprimir tras un choque solo porque el trazado cambie; se
+    // desactiva al elegir explícitamente otro ritmo/caso (nuevo episodio).
+    this._resuscitationActive = false;
+
+    this.eventLog = [];
+    this.statAnalyses = 0;
+    this.statShocks = 0;
+    this._sessionStartedAt = new Date();
 
     this.measuredHR = this.hr;
     this._beatHistory = [];
@@ -80,6 +99,7 @@ export class App {
       selectedGuess: null,
       decisionGiven: false,
     };
+    this._loadQuizScore();
 
     this._simTime = 0;
     this._lastFrameTs = null;
@@ -87,6 +107,8 @@ export class App {
     this._bufW = 0;
 
     this._cacheDom();
+    this.dom.quizScore.textContent = `Aciertos: ${this.quiz.score} / ${this.quiz.total}`;
+    this.dom.cprDurationMode.value = String(this.cprCycleSeconds);
     this._buildRhythmButtons();
     this._buildQuizRhythmOptions();
     this._wireEvents();
@@ -94,6 +116,9 @@ export class App {
     this._startClock();
     this._resetDesaBanner();
     this._updateShockableBadge();
+    this._renderCprToolbar(false, false);
+    this._renderLogList();
+    this._logEvent('Sesión iniciada.');
     requestAnimationFrame((ts) => this._renderLoop(ts));
   }
 
@@ -146,6 +171,19 @@ export class App {
       quizFeedbackTitle: $('quizFeedbackTitle'),
       quizFeedbackText: $('quizFeedbackText'),
       anatomyModal: $('anatomyModal'),
+      btnMetronome: $('btnMetronome'),
+      metronomeDot: $('metronomeDot'),
+      metronomeLabel: $('metronomeLabel'),
+      metronomeRate: $('metronomeRate'),
+      compressionCount: $('compressionCount'),
+      handsOffChip: $('handsOffChip'),
+      cprDurationMode: $('cprDurationMode'),
+      btnToggleLog: $('btnToggleLog'),
+      logToggleIcon: $('logToggleIcon'),
+      sessionLogBody: $('sessionLogBody'),
+      sessionLogList: $('sessionLogList'),
+      logCount: $('logCount'),
+      noFlowTotal: $('noFlowTotal'),
     };
     this.gridCtx = this.dom.gridCanvas.getContext('2d');
     this.wavesCtx = this.dom.wavesCanvas.getContext('2d');
@@ -167,6 +205,21 @@ export class App {
     this.dom.sliderHR.addEventListener('input', (e) => this._onHRSlider(Number(e.target.value)));
     this.dom.sliderNoise.addEventListener('input', (e) => this._onNoiseSlider(Number(e.target.value)));
     window.addEventListener('resize', () => this._resizeCanvases());
+
+    this.dom.btnMetronome.addEventListener('click', () => {
+      this.audio.unlock();
+      this._toggleMetronome();
+    });
+    this.dom.metronomeRate.addEventListener('change', () => {
+      if (this.audio.metronomeRunning) this._startMetronome();
+    });
+    this.dom.cprDurationMode.addEventListener('change', (e) => {
+      this.cprCycleSeconds = Number(e.target.value);
+    });
+    this.dom.btnToggleLog.addEventListener('click', () => {
+      const hidden = this.dom.sessionLogBody.classList.toggle('hidden');
+      this.dom.logToggleIcon.textContent = hidden ? '▾' : '▴';
+    });
   }
 
   // ------------------------------------------------------------ Layout ---
@@ -506,9 +559,183 @@ export class App {
     const tick = () => {
       this.dom.clockDisplay.textContent = new Date().toLocaleTimeString('es-ES', { hour12: false });
       this._tickVitals(1);
+      this._tickNoFlow(1);
     };
     tick();
     setInterval(tick, 1000);
+  }
+
+  // ------------------------------------------------- Metrónomo RCP / flujo --
+
+  _toggleMetronome() {
+    if (this.audio.metronomeRunning) {
+      this._stopMetronome();
+    } else {
+      this._startMetronome();
+      this._logEvent(`Metrónomo RCP iniciado (${this.dom.metronomeRate.value}/min).`);
+    }
+  }
+
+  _startMetronome() {
+    const bpm = Number(this.dom.metronomeRate.value) || 110;
+    this.compressionCount = 0;
+    this.audio.startMetronome(bpm, (count, isVentilationCue) => {
+      this.compressionCount = count;
+      this._pulseMetronomeDot(isVentilationCue);
+      this.dom.compressionCount.textContent = isVentilationCue
+        ? `${count} compresiones · ¡2 ventilaciones!`
+        : `${count} compresiones · 30:2`;
+    });
+    this.dom.btnMetronome.classList.add('border-emerald-600/70', 'bg-emerald-950/60', 'text-emerald-300');
+    this.dom.metronomeDot.classList.add('bg-emerald-400');
+    this.dom.metronomeLabel.textContent = `Metrónomo RCP: ON (${bpm}/min)`;
+  }
+
+  _stopMetronome() {
+    this.audio.stopMetronome();
+    this.dom.btnMetronome.classList.remove('border-emerald-600/70', 'bg-emerald-950/60', 'text-emerald-300');
+    this.dom.metronomeDot.classList.remove('bg-emerald-400');
+    this.dom.metronomeDot.className = 'w-2.5 h-2.5 rounded-full bg-slate-600 transition-all';
+    this.dom.metronomeLabel.textContent = 'Metrónomo RCP: OFF';
+    if (this.compressionCount > 0) this._logEvent(`Metrónomo RCP detenido (${this.compressionCount} compresiones marcadas).`);
+  }
+
+  _pulseMetronomeDot(isVentilationCue) {
+    const dot = this.dom.metronomeDot;
+    dot.className = `w-2.5 h-2.5 rounded-full transition-all ${isVentilationCue ? 'bg-amber-400 scale-150' : 'bg-emerald-400 scale-125'}`;
+    setTimeout(() => {
+      if (this.audio.metronomeRunning) dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 transition-all';
+    }, 90);
+  }
+
+  /** Cronómetro de "manos fuera del pecho" (no-flow time) — ERC/AHA: minimizar pausas, objetivo &lt;10 s por pausa. */
+  _tickNoFlow(dtSeconds) {
+    const def = RHYTHMS[this.rhythmId];
+    if (def && !def.hasPulse) this._resuscitationActive = true;
+    const isNoFlow = this._resuscitationActive && NO_FLOW_STATES.has(this.desaState);
+
+    if (isNoFlow) {
+      this.noFlowCurrentSeconds += dtSeconds;
+      this.noFlowTotalSeconds += dtSeconds;
+    } else {
+      this.noFlowCurrentSeconds = 0;
+    }
+    this._renderCprToolbar(this._resuscitationActive, isNoFlow);
+  }
+
+  _renderCprToolbar(inArrestWorkflow, isNoFlow) {
+    const chip = this.dom.handsOffChip;
+    if (!inArrestWorkflow) {
+      chip.textContent = '— (sin indicación de RCP)';
+      chip.className = 'ml-auto px-2 py-0.5 rounded bg-slate-800 text-slate-500 border border-slate-700';
+    } else if (isNoFlow) {
+      const warn = this.noFlowCurrentSeconds >= NO_FLOW_WARN_SECONDS;
+      chip.textContent = `⏸ Pausa en compresiones: ${Math.round(this.noFlowCurrentSeconds)} s`;
+      chip.className = `ml-auto px-2 py-0.5 rounded border ${
+        warn
+          ? 'bg-red-950 text-red-400 border-red-700/60 animate-flash-critical'
+          : 'bg-amber-950/60 text-amber-300 border-amber-700/50'
+      }`;
+    } else {
+      chip.textContent = '✋ Manos en el pecho';
+      chip.className = 'ml-auto px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-700/40';
+    }
+    this.dom.noFlowTotal.textContent = `${Math.round(this.noFlowTotalSeconds)} s`;
+  }
+
+  // ------------------------------------------------- Registro de sesión --
+
+  _logEvent(label) {
+    const t = Math.max(0, this._simTime || 0);
+    this.eventLog.push({ t, label });
+    if (this.eventLog.length > 300) this.eventLog.shift();
+    this._renderLogList();
+  }
+
+  _renderLogList() {
+    if (!this.dom.sessionLogList) return;
+    const recent = this.eventLog.slice(-8);
+    this.dom.sessionLogList.innerHTML = recent
+      .map((e) => `<div>[${pad2(Math.floor(e.t / 60))}:${pad2(Math.floor(e.t % 60))}] ${e.label}</div>`)
+      .join('');
+    this.dom.sessionLogList.scrollTop = this.dom.sessionLogList.scrollHeight;
+    this.dom.logCount.textContent = String(this.eventLog.length);
+  }
+
+  resetSessionLog() {
+    this.eventLog = [];
+    this.noFlowTotalSeconds = 0;
+    this.noFlowCurrentSeconds = 0;
+    this.statAnalyses = 0;
+    this.statShocks = 0;
+    this._sessionStartedAt = new Date();
+    this._logEvent('Registro de sesión reiniciado.');
+  }
+
+  downloadReport() {
+    const lines = [];
+    lines.push('INFORME DE SESIÓN — CardioSim Pro & DESA');
+    lines.push(`Generado: ${new Date().toLocaleString('es-ES')}`);
+    lines.push(`Inicio de sesión: ${this._sessionStartedAt.toLocaleString('es-ES')}`);
+    lines.push('');
+    lines.push('RESUMEN');
+    lines.push(`- Análisis DESA realizados: ${this.statAnalyses}`);
+    lines.push(`- Descargas administradas: ${this.statShocks}`);
+    lines.push(`- Tiempo total sin flujo (manos fuera del pecho): ${Math.round(this.noFlowTotalSeconds)} s`);
+    lines.push(`- Reto Alumno — aciertos: ${this.quiz.score} / ${this.quiz.total}`);
+    lines.push('');
+    lines.push('CRONOLOGÍA');
+    for (const e of this.eventLog) {
+      lines.push(`[${pad2(Math.floor(e.t / 60))}:${pad2(Math.floor(e.t % 60))}] ${e.label}`);
+    }
+    lines.push('');
+    lines.push(
+      'Nota: generado por un simulador didáctico. Los tiempos y decisiones aquí registrados sirven para el debrief del instructor, no son datos clínicos reales.'
+    );
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    a.href = url;
+    a.download = `informe-cardiosim-${stamp}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    this._logEvent('Informe de sesión descargado.');
+  }
+
+  // ------------------------------------------------- Persistencia quiz --
+
+  _loadQuizScore() {
+    try {
+      const raw = localStorage.getItem(QUIZ_SCORE_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (Number.isFinite(saved?.score) && Number.isFinite(saved?.total)) {
+        this.quiz.score = saved.score;
+        this.quiz.total = saved.total;
+      }
+    } catch {
+      // localStorage no disponible (modo privado, iframe restringido...) — se sigue sin persistencia.
+    }
+  }
+
+  _saveQuizScore() {
+    try {
+      localStorage.setItem(QUIZ_SCORE_STORAGE_KEY, JSON.stringify({ score: this.quiz.score, total: this.quiz.total }));
+    } catch {
+      // ignorar: la puntuación simplemente no persistirá entre recargas.
+    }
+  }
+
+  resetQuizScore() {
+    this.quiz.score = 0;
+    this.quiz.total = 0;
+    this._saveQuizScore();
+    this.dom.quizScore.textContent = `Aciertos: ${this.quiz.score} / ${this.quiz.total}`;
+    this._logEvent('Puntuación del Reto Alumno reiniciada.');
   }
 
   // --------------------------------------------------------------- UI ---
@@ -582,6 +809,7 @@ export class App {
         this.scenarioContext = null;
         this.dom.scenarioIndicator.textContent = this.scenarioLabel;
         this.selectRhythm(id);
+        this._logEvent(`Ritmo seleccionado manualmente: ${def.label}.`);
       });
       container.appendChild(btn);
     }
@@ -620,6 +848,9 @@ export class App {
     this._refreshRhythmButtons();
     this._resetDesaBanner();
     this._updateShockableBadge();
+    if (this.audio.metronomeRunning) this._stopMetronome();
+    this._resuscitationActive = false;
+    this.noFlowCurrentSeconds = 0;
   }
 
   _onHRSlider(val) {
@@ -650,6 +881,7 @@ export class App {
     this.dom.sliderNoise.value = String(scenario.noise);
     this._onNoiseSlider(scenario.noise);
     this.dom.desaGuidanceSubtext.textContent = scenario.context;
+    this._logEvent(`Escenario cargado: ${scenario.label}.`);
   }
 
   // ------------------------------------------------------------ DESA ----
@@ -673,7 +905,10 @@ export class App {
 
   async _analyzeDESA() {
     if (this.desaState === 'analyzing' || this.desaState === 'cpr-wait') return;
+    if (this.audio.metronomeRunning) this._stopMetronome(); // manos fuera del pecho durante el análisis
     this.desaState = 'analyzing';
+    this.statAnalyses += 1;
+    this._logEvent('DESA: iniciando análisis de ritmo (manos fuera del pecho).');
     this.dom.btnAnalyzeDESA.disabled = true;
     this.dom.btnShockDESA.disabled = true;
     this.dom.desaVoiceText.textContent = '"Analizando ritmo cardíaco. No toque al paciente."';
@@ -693,6 +928,7 @@ export class App {
       this.dom.desaGuidanceSubtext.textContent =
         'No es una parada cardiorrespiratoria: solicite ayuda médica avanzada urgente. No inicie RCP ni desfibrile.';
       this.dom.btnAnalyzeDESA.disabled = false;
+      this._logEvent('DESA: ritmo con pulso/consciencia detectado — el DESA no procede.');
       return;
     }
 
@@ -704,11 +940,13 @@ export class App {
       this.dom.btnShockDESA.disabled = false;
       this.dom.btnShockDESA.className =
         'px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-black text-xs uppercase tracking-wider transition-all active:scale-95 animate-pulse-ring flex items-center gap-1.5';
+      this._logEvent('DESA: descarga RECOMENDADA. Cargando.');
     } else {
       this.desaState = 'result-not-shockable';
       this.dom.desaVoiceText.textContent = '"No se recomienda descarga. Reanude la RCP."';
       this.dom.desaGuidanceSubtext.textContent = 'Continúe compresiones torácicas de alta calidad, 30:2.';
       this.audio.speak('No se recomienda descarga. Reanude la reanimación cardiopulmonar de inmediato.');
+      this._logEvent('DESA: descarga NO recomendada. Reanudar RCP.');
       this._startCprCycle();
     }
   }
@@ -716,6 +954,7 @@ export class App {
   async _deliverShock() {
     if (this.desaState !== 'result-shockable') return;
     this.desaState = 'shocked';
+    this.statShocks += 1;
     this.dom.btnShockDESA.disabled = true;
     this.dom.shockBtnText.textContent = 'DESCARGANDO…';
     this._flashShock();
@@ -723,6 +962,7 @@ export class App {
 
     const success = Math.random() < 0.7;
     await delay(350);
+    this._logEvent(`DESA: descarga administrada (${success ? 'ritmo convertido' : 'sin conversión aparente'}).`);
     if (success) {
       this.rhythmId = 'sinus_tachy';
       this.engine.setRhythm(this.rhythmId);
@@ -757,15 +997,19 @@ export class App {
     this.desaState = 'cpr-wait';
     this.dom.btnAnalyzeDESA.disabled = true;
     this.dom.btnShockDESA.disabled = true;
-    this.cprSecondsLeft = CPR_CYCLE_SECONDS;
+    this.cprSecondsLeft = this.cprCycleSeconds;
+    this._logEvent(`RCP: ciclo de compresiones iniciado (${this.cprCycleSeconds}s hasta próximo análisis).`);
+    if (!this.audio.metronomeRunning) this._startMetronome();
 
     if (this._cprInterval) clearInterval(this._cprInterval);
     if (!this.dom.skipWaitBtn) this._injectSkipWaitButton();
     this.dom.skipWaitBtn.classList.remove('hidden');
 
+    const compressed = this.cprCycleSeconds < 120;
     const tick = () => {
       this.cprSecondsLeft -= 1;
-      this.dom.desaGuidanceSubtext.textContent = `RCP en curso — próximo análisis disponible en ${Math.max(0, this.cprSecondsLeft)} s (simulación acelerada de los 2 min reales).`;
+      const suffix = compressed ? ' (ritmo de aula, comprime los 2 min reales del algoritmo).' : ' (tiempo real ERC/AHA).';
+      this.dom.desaGuidanceSubtext.textContent = `RCP en curso — próximo análisis disponible en ${Math.max(0, this.cprSecondsLeft)} s${suffix}`;
       if (this.cprSecondsLeft <= 0) this._endCprCycle();
     };
     tick();
@@ -775,7 +1019,7 @@ export class App {
   _injectSkipWaitButton() {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = 'Saltar espera (modo aula) ⏭';
+    btn.textContent = 'Saltar espera ⏭';
     btn.className =
       'mt-1 w-full text-[10px] font-mono text-slate-400 hover:text-slate-200 underline decoration-dotted';
     btn.addEventListener('click', () => this._endCprCycle());
@@ -792,6 +1036,7 @@ export class App {
     this.dom.btnShockDESA.disabled = true;
     this.dom.desaVoiceText.textContent = '"Ciclo de RCP completado. Analice el ritmo cuando esté listo."';
     this.dom.desaGuidanceSubtext.textContent = this.scenarioContext || 'Pulse "Analizar Ritmo" para continuar el algoritmo.';
+    this._logEvent('RCP: ciclo completado, listo para reanalizar.');
   }
 
   // ------------------------------------------------------------- Quiz ---
@@ -866,6 +1111,8 @@ export class App {
     if (fullyCorrect) this.quiz.score += 1;
     this.quiz.decisionGiven = true;
     this.dom.quizScore.textContent = `Aciertos: ${this.quiz.score} / ${this.quiz.total}`;
+    this._saveQuizScore();
+    this._logEvent(`Quiz: ${fullyCorrect ? 'ACIERTO' : 'FALLO'} — ${def.label}.`);
 
     for (const b of this.dom.quizRhythmOptions.children) b.disabled = true;
     this.dom.quizShockYes.disabled = true;

@@ -54,7 +54,7 @@
 
   <main class="flex-1 flex flex-col lg:flex-row gap-2 p-2 sm:p-3 overflow-y-auto lg:overflow-hidden">
 
-    <div class="lg:flex-1 flex flex-col bg-monitor rounded-xl border-2 border-slate-800 shadow-2xl relative overflow-hidden min-h-[540px] shrink-0">
+    <div class="lg:flex-1 flex flex-col bg-monitor rounded-xl border-2 border-slate-800 shadow-2xl relative overflow-hidden shrink-0">
       <div class="absolute inset-0 crt-overlay pointer-events-none z-10"></div>
 
       <div class="bg-slate-900/90 border-b border-slate-800/80 px-3 py-1 flex items-center justify-between text-[11px] font-mono text-slate-400 z-20">
@@ -161,6 +161,22 @@
         </div>
       </div>
 
+      <div id="cprToolbar" class="bg-slate-950/70 border-t border-slate-800/80 px-3 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 z-20 text-[11px] font-mono">
+        <button id="btnMetronome" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 transition-all">
+          <span id="metronomeDot" class="w-2.5 h-2.5 rounded-full bg-slate-600 transition-all"></span>
+          <span id="metronomeLabel">Metrónomo RCP: OFF</span>
+        </button>
+        <select id="metronomeRate" class="bg-slate-800 border border-slate-700 rounded-md px-1.5 py-1 text-slate-300 text-[11px]">
+          <option value="100">100/min</option>
+          <option value="110" selected>110/min</option>
+          <option value="120">120/min</option>
+        </select>
+        <span id="compressionCount" class="text-slate-500">0 compresiones · 30:2</span>
+        <span id="handsOffChip" class="ml-auto px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-700/40">
+          ✋ Manos en el pecho
+        </span>
+      </div>
+
       <div id="desaBanner" class="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-t border-slate-700 p-2 sm:p-3 flex flex-wrap items-center justify-between gap-2 z-20">
         <div class="flex items-center gap-3">
           <div class="p-2 rounded-lg bg-desa/20 border border-desa/60 text-desa font-black font-mono text-sm tracking-wider flex items-center gap-1.5">
@@ -228,6 +244,14 @@
             <span id="sliderNoiseVal" class="font-mono text-slate-400">Bajo</span>
           </div>
           <input id="sliderNoise" type="range" min="0" max="100" value="5" class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500">
+
+          <div class="flex items-center justify-between pt-1">
+            <span class="text-[11px] font-medium text-slate-300">Duración ciclo de RCP entre análisis:</span>
+          </div>
+          <select id="cprDurationMode" class="w-full bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5 text-[11px] text-slate-200">
+            <option value="24">Ritmo de aula (24 s, con opción de saltar)</option>
+            <option value="120">Tiempo real ERC/AHA (2:00 min)</option>
+          </select>
         </div>
 
         <div>
@@ -274,6 +298,9 @@
           <p class="text-[11px] text-slate-300 mt-1.5">
             Observa el trazado en pantalla y escucha las alertas del monitor. ¿Qué ritmo presenta el paciente y qué acción prioritaria debe tomarse con el DESA?
           </p>
+          <button onclick="app.resetQuizScore()" class="mt-1.5 text-[10px] font-mono text-amber-400/70 hover:text-amber-300 underline decoration-dotted">
+            Reiniciar puntuación
+          </button>
         </div>
 
         <div class="space-y-1.5">
@@ -301,6 +328,23 @@
           </button>
         </div>
 
+      </div>
+
+      <div id="sessionLogSection" class="border-t border-slate-800 bg-slate-950/60 shrink-0">
+        <button id="btnToggleLog" class="w-full flex items-center justify-between px-3 py-2 text-[11px] font-mono text-slate-400 hover:text-slate-200">
+          <span>📋 Registro de sesión (<span id="logCount">0</span>)</span>
+          <span id="logToggleIcon">▾</span>
+        </button>
+        <div id="sessionLogBody" class="hidden px-3 pb-3 space-y-2">
+          <div id="sessionLogList" class="max-h-32 overflow-y-auto space-y-0.5 text-[10px] font-mono text-slate-400 border border-slate-800 rounded-md p-2 bg-slate-900/60"></div>
+          <div class="flex items-center justify-between text-[10px] font-mono text-slate-500 flex-wrap gap-1.5">
+            <span>Sin flujo (sesión): <b id="noFlowTotal" class="text-slate-300">0 s</b></span>
+            <div class="flex gap-2">
+              <button onclick="app.downloadReport()" class="px-2 py-1 rounded bg-emerald-700/40 border border-emerald-600/50 text-emerald-300 hover:bg-emerald-700/60">⬇ Informe</button>
+              <button onclick="app.resetSessionLog()" class="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-400 hover:bg-slate-700">Reiniciar</button>
+            </div>
+          </div>
+        </div>
       </div>
 
     </div>
