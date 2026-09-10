@@ -23,53 +23,84 @@ function mulberry32(seed) {
   };
 }
 
-function sinusBeatShape(p) {
+// Las formas de onda de abajo se definen en MILISEGUNDOS ABSOLUTOS desde el
+// inicio del latido (onda P ≈ t=0), no como fracción del ciclo. Esto es
+// clínicamente importante: la anchura del QRS (estrecho ~90ms, ancho
+// ~150-180ms) es una propiedad de la vía de conducción, independiente de la
+// frecuencia cardíaca — a 210 lpm el ciclo dura solo 286ms, así que un QRS
+// "ancho" definido como fracción fija del ciclo (como se hacía antes) se
+// encogía junto con el ciclo y dejaba de verse ancho. Al fijar la anchura en
+// ms y convertir a fase dividiendo por el período real en cada latido, un
+// QRS ancho se ve ancho (y ocupa más ciclo) sea cual sea la frecuencia,
+// exactamente como en un monitor real.
+function sinusBeatShape(phase, periodMs) {
+  const t = phase * periodMs;
   let v = 0;
-  v += 0.16 * gauss(p, 0.15, 0.02); // P
-  v += -0.1 * gauss(p, 0.295, 0.006); // Q
-  v += 1.0 * gauss(p, 0.315, 0.009); // R
-  v += -0.28 * gauss(p, 0.336, 0.009); // S
-  v += 0.3 * gauss(p, 0.58, 0.05); // T
+  v += 0.16 * gauss(t, 40, 16); // P
+  v += -0.1 * gauss(t, 163, 6); // Q
+  v += 1.0 * gauss(t, 178, 8); // R
+  v += -0.28 * gauss(t, 196, 7); // S
+  v += 0.3 * gauss(t, 380, 45); // T
   return v;
 }
 
-function narrowNoPShape(p) {
+function narrowNoPShape(phase, periodMs) {
   // QRS estrecho + T, sin onda P (FA, AESP, bloqueo AV completo escape)
+  const t = phase * periodMs;
   let v = 0;
-  v += -0.08 * gauss(p, 0.295, 0.006);
-  v += 0.95 * gauss(p, 0.315, 0.009);
-  v += -0.22 * gauss(p, 0.335, 0.008);
-  v += 0.26 * gauss(p, 0.58, 0.05);
+  v += -0.08 * gauss(t, 163, 6);
+  v += 0.95 * gauss(t, 178, 8);
+  v += -0.22 * gauss(t, 196, 7);
+  v += 0.26 * gauss(t, 380, 45);
   return v;
 }
 
-function wideBeatShape(p) {
-  // QRS ancho y "en bloque", sin P ni T diferenciadas (TV)
+function wideBeatShape(phase, periodMs) {
+  // QRS ancho (~150-180ms) y "en bloque", sin P ni T diferenciadas (TV)
+  const t = phase * periodMs;
   let v = 0;
-  v += 1.15 * gauss(p, 0.3, 0.04);
-  v += -0.45 * gauss(p, 0.44, 0.035);
+  v += 1.15 * gauss(t, 175, 32);
+  v += -0.45 * gauss(t, 258, 30);
   return v;
 }
 
-function flutterBeatShape(p) {
+function flutterBeatShape(phase, periodMs) {
+  const t = phase * periodMs;
   let v = 0;
-  v += -0.09 * gauss(p, 0.295, 0.006);
-  v += 0.92 * gauss(p, 0.315, 0.009);
-  v += -0.2 * gauss(p, 0.335, 0.008);
-  v += 0.22 * gauss(p, 0.58, 0.05);
+  v += -0.09 * gauss(t, 163, 6);
+  v += 0.92 * gauss(t, 178, 8);
+  v += -0.2 * gauss(t, 196, 7);
+  v += 0.22 * gauss(t, 380, 45);
   return v;
 }
 
-function plethShape(p) {
-  let v = 0;
-  v += 1.0 * gauss(p, 0.1, 0.045); // pico sistólico
-  v += 0.28 * gauss(p, 0.34, 0.07); // muesca dicrota
+// Onda de pulso (pletismografía) — forma fisiológica real, NO un pico
+// simétrico como el QRS: subida anacrota rápida, bajada catacrota lenta
+// (la sangre eyectada se escurre por el lecho vascular mucho más despacio
+// de lo que sube), con una muesca dicrota a mitad de la bajada (cierre de
+// la válvula aórtica). Deliberadamente asimétrica para que no se confunda
+// visualmente con un complejo QRS.
+function plethShape(phase) {
+  const peak = 0.14;
+  let v;
+  if (phase < peak) {
+    const d = (phase - peak) / 0.045; // subida rápida
+    v = Math.exp(-0.5 * d * d);
+  } else {
+    const d = (phase - peak) / 0.22; // bajada lenta
+    v = Math.exp(-0.5 * d * d);
+  }
+  v += 0.22 * gauss(phase, peak + 0.24, 0.05); // muesca dicrota
   return v;
 }
 
 // Definición de cada ritmo. `wave` selecciona la familia de generación en
 // RhythmEngine. `shockable` es la verdad clínica (algoritmo DESA/ERC-AHA).
-// `hasPulse` determina si hay onda de pulso/SpO2/TA válidas.
+// `hasPulse` determina si hay onda de pulso/SpO2/TA válidas. `rrVariability`
+// (0-1) controla cuánto varía aleatoriamente cada intervalo RR respecto al
+// anterior: 0 = perfectamente regular (p.ej. TV monomórfica, donde la
+// regularidad es un rasgo diagnóstico), valores altos = "irregularmente
+// irregular" (FA).
 export const RHYTHMS = {
   sinus_normal: {
     id: 'sinus_normal',
@@ -83,6 +114,7 @@ export const RHYTHMS = {
     hrRange: [60, 100],
     spo2Range: [96, 99],
     respRange: [12, 18],
+    rrVariability: 0.03,
     desc: 'Ritmo sinusal normal: onda P seguida de QRS estrecho, regular, 60-100 lpm. Paciente estable.',
     quizExplanation:
       'Ritmo sinusal normal: onda P antes de cada QRS estrecho, frecuencia regular entre 60-100 lpm. No es un ritmo de parada; no se aplica el DESA.',
@@ -99,6 +131,7 @@ export const RHYTHMS = {
     hrRange: [35, 59],
     spo2Range: [94, 98],
     respRange: [10, 16],
+    rrVariability: 0.03,
     desc: 'Ritmo sinusal por debajo de 60 lpm. Puede requerir atropina o marcapasos si es sintomática.',
     quizExplanation:
       'Bradicardia sinusal: morfología sinusal normal pero con frecuencia &lt;60 lpm. Con pulso presente, no es un ritmo desfibrilable.',
@@ -115,6 +148,7 @@ export const RHYTHMS = {
     hrRange: [101, 150],
     spo2Range: [95, 99],
     respRange: [16, 24],
+    rrVariability: 0.02,
     desc: 'Ritmo sinusal acelerado, típicamente reactivo (dolor, fiebre, hipovolemia, ansiedad).',
     quizExplanation:
       'Taquicardia sinusal: P-QRS-T conservados, frecuencia &gt;100 lpm. Con pulso presente; no está indicado el DESA, se trata la causa subyacente.',
@@ -131,9 +165,10 @@ export const RHYTHMS = {
     hrRange: [90, 160],
     spo2Range: [93, 98],
     respRange: [14, 20],
+    rrVariability: 0.4,
     desc: 'Ausencia de ondas P (línea fibrilatoria) con respuesta ventricular irregularmente irregular.',
     quizExplanation:
-      'Fibrilación auricular: no hay ondas P, línea de base fibrilatoria, QRS estrecho con RR irregular ("irregularmente irregular"). Con pulso; no es indicación de DESA salvo inestabilidad extrema que requiera cardioversión sincronizada por personal cualificado (no modo DESA/AED).',
+      'Fibrilación auricular: no hay ondas P, línea de base fibrilatoria, QRS estrecho con RR irregular ("irregularmente irregular" — el rasgo diagnóstico principal, visible aquí como espaciado desigual entre complejos). Con pulso; no es indicación de DESA salvo inestabilidad extrema que requiera cardioversión sincronizada por personal cualificado (no modo DESA/AED).',
   },
   aflutter: {
     id: 'aflutter',
@@ -147,6 +182,7 @@ export const RHYTHMS = {
     hrRange: [75, 150],
     spo2Range: [94, 98],
     respRange: [14, 20],
+    rrVariability: 0.02,
     desc: 'Ondas "en dientes de sierra" (ondas F) a ~300/min con conducción ventricular regular (2:1, 3:1...).',
     quizExplanation:
       'Flutter auricular: ondas F en "dientes de sierra" entre los QRS, respuesta ventricular regular. Con pulso; no es indicación de DESA.',
@@ -164,6 +200,7 @@ export const RHYTHMS = {
     hrRange: [150, 200],
     spo2Range: [90, 96],
     respRange: [18, 26],
+    rrVariability: 0.015,
     desc: 'QRS ancho y regular a alta frecuencia. Paciente consciente y con pulso: NO es una parada cardiorrespiratoria.',
     quizExplanation:
       'Taquicardia ventricular CON pulso: QRS ancho (&gt;0,12s) y regular, pero el paciente está consciente y tiene pulso — no hay parada cardiorrespiratoria. El DESA en modo automático no se aplica aquí: requiere valoración médica urgente / cardioversión sincronizada por personal cualificado, nunca un choque de AED sin confirmar antes ausencia de consciencia, pulso y respiración normal.',
@@ -180,6 +217,7 @@ export const RHYTHMS = {
     hrRange: [180, 250],
     spo2Range: null,
     respRange: [0, 0],
+    rrVariability: 0.015,
     desc: 'QRS ancho, regular, muy rápido. Sin pulso: parada cardiorrespiratoria. Ritmo desfibrilable.',
     quizExplanation:
       'Taquicardia ventricular SIN pulso (TVSP): mismo QRS ancho y regular que la TV, pero sin pulso ni signos de circulación → parada cardiorrespiratoria. Es un ritmo DESFIBRILABLE: descarga inmediata + RCP.',
@@ -224,13 +262,14 @@ export const RHYTHMS = {
     wave: 'torsades',
     shockable: true,
     hasPulse: false,
-    defaultHR: 220,
+    defaultHR: 230,
     hrRange: [200, 250],
     spo2Range: null,
     respRange: [0, 0],
-    desc: 'TV polimórfica con amplitud del QRS "trenzándose" alrededor de la línea de base. Asociada a QT largo.',
+    rrVariability: 0.2,
+    desc: 'TV polimórfica caótica: el eje y la amplitud del QRS "giran" alrededor de la línea de base — de hecho una variante organizada-caótica de la FV. Asociada a QT largo.',
     quizExplanation:
-      'Torsade de Pointes: TV polimórfica en la que los complejos parecen girar en torno a la línea isoeléctrica ("trenzado"). Sin pulso es DESFIBRILABLE.',
+      'Torsade de Pointes: TV polimórfica en la que los complejos invierten su polaridad y "trenzan" alrededor de la línea isoeléctrica de forma caótica e irregular — clínicamente se comporta como una FV organizada en husos. Sin pulso es DESFIBRILABLE.',
   },
   asystole: {
     id: 'asystole',
@@ -260,6 +299,7 @@ export const RHYTHMS = {
     hrRange: [40, 100],
     spo2Range: null,
     respRange: [0, 0],
+    rrVariability: 0.04,
     desc: 'El monitor muestra un ritmo organizado (a veces casi normal) pero el paciente no tiene pulso palpable.',
     quizExplanation:
       'AESP: el ECG puede parecer organizado, incluso casi normal, pero NO hay pulso palpable ni signos de circulación. No es desfibrilable — RCP + adrenalina + buscar y tratar causas reversibles (4H/4T). Es la trampa clásica: "si tiene complejos en el monitor, tiene pulso" es FALSO.',
@@ -276,6 +316,7 @@ export const RHYTHMS = {
     hrRange: [25, 40],
     spo2Range: [88, 95],
     respRange: [10, 16],
+    rrVariability: 0.02,
     desc: 'Disociación completa entre ondas P (a su propio ritmo) y QRS de escape, lento y regular.',
     quizExplanation:
       'Bloqueo AV completo: las ondas P y los QRS "van cada uno por su lado" (disociación AV), QRS de escape lento y regular. Con pulso presente pero inestable: no se desfibrila, se trata con atropina/marcapasos transcutáneo urgente.',
@@ -306,13 +347,14 @@ export class RhythmEngine {
     this.flutterCounter = 0;
     this.torsadesEnv = 0;
     this._lastNoise = 0;
-    this._nextBeatJitter = 0;
+    this._currentPeriod = null; // segundos — se fija por latido, ver advance()
     this.setRhythm(rhythmId);
   }
 
   setRhythm(id) {
     this.def = RHYTHMS[id] || RHYTHMS.sinus_normal;
     this.beatPhase = 0;
+    this._currentPeriod = null;
   }
 
   _noise() {
@@ -349,34 +391,50 @@ export class RhythmEngine {
       case 'wide':
       case 'torsades': {
         const effectiveHR = Math.max(hr, 1);
-        const period = 60 / effectiveHR;
-        this.beatPhase += dt / period;
+        const basePeriod = 60 / effectiveHR;
+        // El período de ESTE latido se fija al empezarlo y se mantiene
+        // constante hasta el siguiente — así un ritmo con rrVariability
+        // alto (FA) tiene intervalos RR realmente distintos latido a
+        // latido ("irregularmente irregular"), en vez de recalcularse
+        // suavemente cada frame, lo que produciría un ritmo regular.
+        if (this._currentPeriod == null) this._currentPeriod = basePeriod;
+        const periodMs = this._currentPeriod * 1000;
+        this.beatPhase += dt / this._currentPeriod;
         if (this.beatPhase >= 1) {
           this.beatPhase -= 1;
           this.flutterCounter += 1;
           beatTrigger = true;
+          const variability = def.rrVariability || 0;
+          const jitter = 1 + (this.rnd() - 0.5) * 2 * variability;
+          this._currentPeriod = basePeriod * Math.max(0.35, jitter);
         }
 
         if (def.wave === 'sinus') {
-          ecg = sinusBeatShape(this.beatPhase);
+          ecg = sinusBeatShape(this.beatPhase, periodMs);
         } else if (def.wave === 'narrow') {
-          ecg = narrowNoPShape(this.beatPhase);
+          ecg = narrowNoPShape(this.beatPhase, periodMs);
         } else if (def.wave === 'block3') {
           // QRS de escape (estrecho-moderado) + ondas P disociadas a un
           // ritmo auricular propio, más rápido e independiente del QRS.
-          ecg = narrowNoPShape(this.beatPhase);
+          ecg = narrowNoPShape(this.beatPhase, periodMs);
           const pAtrialPhase = (this.beatPhase * 2.7 + 0.15) % 1;
-          ecg += 0.15 * gauss(pAtrialPhase, 0.15, 0.02);
+          ecg += 0.15 * gauss(pAtrialPhase * periodMs, 40, 16);
         } else if (def.wave === 'afib') {
-          ecg = narrowNoPShape(this.beatPhase);
+          ecg = narrowNoPShape(this.beatPhase, periodMs);
         } else if (def.wave === 'aflutter') {
-          ecg = flutterBeatShape(this.beatPhase);
+          ecg = flutterBeatShape(this.beatPhase, periodMs);
         } else if (def.wave === 'wide') {
-          ecg = wideBeatShape(this.beatPhase);
+          ecg = wideBeatShape(this.beatPhase, periodMs);
         } else if (def.wave === 'torsades') {
-          this.torsadesEnv = (this.torsadesEnv + dt * 0.6) % 1;
-          const envelope = 0.35 + 0.65 * Math.abs(Math.sin(2 * Math.PI * this.torsadesEnv));
-          ecg = wideBeatShape(this.beatPhase) * envelope;
+          // El eje "gira": la envolvente cruza el cero (Math.sin, no su
+          // valor absoluto) invirtiendo la polaridad del complejo en cada
+          // medio ciclo de giro, y la morfología varía latido a latido
+          // (polimórfica) — visualmente es una FV organizada en husos, no
+          // una TV monomórfica con la amplitud simplemente modulada.
+          this.torsadesEnv = (this.torsadesEnv + dt * 0.45) % 1;
+          const envelope = Math.sin(2 * Math.PI * this.torsadesEnv);
+          const morphJitter = 1 + (this.rnd() - 0.5) * 0.35;
+          ecg = wideBeatShape(this.beatPhase, periodMs) * envelope * morphJitter;
         }
 
         const plethPhase = (this.beatPhase + 0.88) % 1;

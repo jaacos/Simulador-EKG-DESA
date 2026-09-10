@@ -106,6 +106,7 @@ export class App {
     this._lastFrameTs = null;
     this._lastWriteCol = null;
     this._bufW = 0;
+    this.paused = false;
 
     this._cacheDom();
     this.dom.quizScore.textContent = `Aciertos: ${this.quiz.score} / ${this.quiz.total}`;
@@ -134,6 +135,9 @@ export class App {
       tabModeTeacher: $('tabModeTeacher'),
       tabModeQuiz: $('tabModeQuiz'),
       btnFullscreen: $('btnFullscreen'),
+      btnPause: $('btnPause'),
+      pauseIcon: $('pauseIcon'),
+      pauseLabel: $('pauseLabel'),
       gridCanvas: $('gridCanvas'),
       wavesCanvas: $('wavesCanvas'),
       qrsFilterStatus: $('qrsFilterStatus'),
@@ -195,6 +199,7 @@ export class App {
     this.dom.tabModeTeacher.addEventListener('click', () => this._switchMode('teacher'));
     this.dom.tabModeQuiz.addEventListener('click', () => this._switchMode('quiz'));
     this.dom.btnFullscreen.addEventListener('click', () => this._toggleFullscreen());
+    this.dom.btnPause.addEventListener('click', () => this._togglePause());
     this.dom.btnAnalyzeDESA.addEventListener('click', () => {
       this.audio.unlock();
       this._analyzeDESA();
@@ -293,11 +298,26 @@ export class App {
     this._lastFrameTs = ts;
     dt = clamp(dt, 0, 0.25); // evita saltos tras pestaña en segundo plano
 
-    this._simTime += dt;
-    this._advanceSweep();
-    this._drawWaves();
+    if (!this.paused) {
+      this._simTime += dt;
+      this._advanceSweep();
+      this._drawWaves();
+    }
 
     requestAnimationFrame((next) => this._renderLoop(next));
+  }
+
+  _togglePause() {
+    this.paused = !this.paused;
+    this.dom.pauseIcon.textContent = this.paused ? '▶' : '⏸';
+    this.dom.pauseLabel.textContent = this.paused ? 'Reanudar' : 'Pausar';
+    this.dom.btnPause.classList.toggle('bg-amber-500', this.paused);
+    this.dom.btnPause.classList.toggle('border-amber-400', this.paused);
+    this.dom.btnPause.classList.toggle('text-slate-950', this.paused);
+    this.dom.btnPause.classList.toggle('bg-slate-800', !this.paused);
+    this.dom.btnPause.classList.toggle('border-slate-700', !this.paused);
+    this.dom.btnPause.classList.toggle('text-slate-300', !this.paused);
+    if (this.audio.metronomeRunning) this._stopMetronome();
   }
 
   /**
@@ -559,6 +579,7 @@ export class App {
   _startClock() {
     const tick = () => {
       this.dom.clockDisplay.textContent = new Date().toLocaleTimeString('es-ES', { hour12: false });
+      if (this.paused) return; // trazado congelado: no avanzar vitales/alarmas/no-flow
       this._tickVitals(1);
       this._tickNoFlow(1);
       this._tickAlarms();
